@@ -1,3 +1,4 @@
+import base64
 import re
 import time
 from dataclasses import asdict, dataclass, field as dc_field
@@ -7,6 +8,7 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 from config import API_DETAIL_URL, API_HEADERS, MAX_RETRIES, REQUEST_DELAY, REQUEST_TIMEOUT
+from scraper.pdf_extractor import extract_text_from_pdf, is_pdf, save_pdf
 
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
@@ -34,6 +36,9 @@ class VBDocument:
     status: str = ""
     issuing_people: list[dict] = dc_field(default_factory=list)
     full_text: str = ""
+    content_html: str = dc_field(default="", repr=False)  # HTML gốc để giữ formatting
+    content_source: str = ""          # "html", "pdf", "pdf_ocr", "summary_only", "none"
+    pdf_bytes: bytes = dc_field(default=b"", repr=False)
     articles: list[dict] = dc_field(default_factory=list)
     related_docs: list[dict] = dc_field(default_factory=list)
     signature: dict = dc_field(default_factory=dict)
@@ -44,7 +49,10 @@ class VBDocument:
         return self.url_toanvan
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("pdf_bytes", None)
+        d.pop("content_html", None)  # Không serialize HTML lớn vào JSON
+        return d
 
 
 def _get_json(session: requests.Session, url: str) -> dict | None:
@@ -259,7 +267,24 @@ def _extract_articles(full_text: str) -> list[dict]:
         r"(Điều\s+\d+[\.:]?\s*[^\n]*)\n(.*?)(?=Điều\s+\d+|$)",
         re.IGNORECASE | re.DOTALL,
     )
+
     articles = []
+
+    # ── Trích preamble (phần trước Điều 1): quốc hiệu, căn cứ... ────────────
+    first_match = pattern.search(full_text)
+    if first_match and first_match.start() > 0:
+        preamble_text = full_text[: first_match.start()].strip()
+        if preamble_text:
+            articles.append(
+                {
+                    "article_number": "",
+                    "title": "",
+                    "content": preamble_text,
+                    "_is_preamble": True,
+                }
+            )
+
+    # ── Trích các Điều ───────────────────────────────────────────────────────
     for match in pattern.finditer(full_text):
         header = match.group(1).strip()
         content = match.group(2).strip()
@@ -384,6 +409,220 @@ def _relationship_graph(diagram: dict, current_doc: dict) -> dict:
     return {"nodes": list(nodes.values()), "edges": edges, "raw": diagram}
 
 
+def _find_pdf_urls(data: dict) -> list[str]:
+    """
+    Tìm tất cả URL có thể tải PDF từ response data.
+    API trả về cấu trúc khác nhau tùy loại văn bản.
+    """
+    urls = []
+
+    # Kiểm tra các trường phổ biến chứa file URL
+    for key in ("fileUrl", "pdfUrl", "filePath", "downloadUrl", "contentUrl"):
+        val = data.get(key)
+        if val and isinstance(val, str):
+            urls.append(val)
+
+    # Kiểm tra trong documentContent
+    doc_content = data.get("documentContent")
+    if isinstance(doc_content, dict):
+        for key in ("fileUrl", "pdfUrl", "filePath", "downloadUrl"):
+            val = doc_content.get(key)
+            if val and isinstance(val, str):
+                urls.append(val)
+
+    # Kiểm tra documentFiles / attachments
+    for list_key in ("documentFiles", "files", "attachments", "documentAttachments"):
+        file_list = data.get(list_key)
+        if not isinstance(file_list, list):
+            continue
+        for file_item in file_list:
+            if not isinstance(file_item, dict):
+                continue
+            for url_key in ("url", "fileUrl", "downloadUrl", "path", "filePath"):
+                val = file_item.get(url_key)
+                if val and isinstance(val, str):
+                    urls.append(val)
+                    break
+
+    return urls
+
+
+def _try_decode_base64_pdf(data: dict) -> bytes | None:
+    """
+    Kiểm tra nếu response chứa PDF base64-encoded.
+    Một số văn bản cũ trả về dạng này thay vì HTML.
+    """
+    doc_content = data.get("documentContent")
+    if isinstance(doc_content, dict):
+        # Tìm trường chứa base64 data
+        for key in ("content", "fileContent", "pdfContent", "base64", "data"):
+            val = doc_content.get(key)
+            if not val or not isinstance(val, str):
+                continue
+            # Kiểm tra nếu là base64 PDF (bắt đầu bằng JVBERi = %PDF-)
+            if val.startswith("JVBERi") or val.startswith("JVBER"):
+                try:
+                    pdf_bytes = base64.b64decode(val)
+                    if is_pdf(pdf_bytes):
+                        logger.info("Found base64-encoded PDF in documentContent")
+                        return pdf_bytes
+                except Exception:
+                    pass
+
+    # Kiểm tra top-level fields
+    for key in ("content", "fileContent", "pdfContent", "base64Content"):
+        val = data.get(key)
+        if not val or not isinstance(val, str):
+            continue
+        if val.startswith("JVBERi") or val.startswith("JVBER"):
+            try:
+                pdf_bytes = base64.b64decode(val)
+                if is_pdf(pdf_bytes):
+                    logger.info(f"Found base64-encoded PDF in field '{key}'")
+                    return pdf_bytes
+            except Exception:
+                pass
+
+    return None
+
+
+def _download_pdf(session: requests.Session, url: str) -> bytes | None:
+    """Tải PDF từ URL."""
+    try:
+        if not url.startswith("http"):
+            url = f"https://vbpl-bientap-gateway.moj.gov.vn{url}"
+        logger.info(f"Downloading PDF: {url}")
+        resp = session.get(url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        content = resp.content
+        if is_pdf(content):
+            return content
+        # Có thể response trả về JSON chứa base64
+        try:
+            json_data = resp.json()
+            if isinstance(json_data, dict):
+                for key in ("data", "content", "file", "fileContent"):
+                    val = json_data.get(key)
+                    if isinstance(val, str) and val.startswith("JVBERi"):
+                        return base64.b64decode(val)
+        except (ValueError, KeyError):
+            pass
+    except requests.RequestException as exc:
+        logger.debug(f"PDF download failed: {exc}")
+    return None
+
+
+def _try_pdf_endpoints(session: requests.Session, item_id: str) -> bytes | None:
+    """
+    Thử tải PDF từ các endpoint phổ biến của API.
+    Kiểm tra nhiều pattern vì cấu trúc API có thể khác nhau.
+    """
+    endpoints = [
+        f"{API_DETAIL_URL}/{item_id}/file",
+        f"{API_DETAIL_URL}/{item_id}/download",
+        f"{API_DETAIL_URL}/{item_id}/content",
+        f"{API_DETAIL_URL}/{item_id}/pdf",
+    ]
+    for url in endpoints:
+        pdf_bytes = _download_pdf(session, url)
+        if pdf_bytes:
+            return pdf_bytes
+    return None
+
+
+def _log_available_keys(data: dict, label: str = "API response") -> None:
+    """Log tất cả keys trong data để debug cấu trúc response."""
+    if not data:
+        return
+    keys = sorted(data.keys())
+    logger.debug(f"{label} keys ({len(keys)}): {keys}")
+    # Log sub-keys cho documentContent
+    dc = data.get("documentContent")
+    if isinstance(dc, dict):
+        dc_keys = sorted(dc.keys())
+        logger.debug(f"  documentContent keys: {dc_keys}")
+
+
+def _extract_content_with_fallback(
+    session: requests.Session,
+    data: dict,
+    item_id: str,
+    item: dict,
+) -> tuple[str, str, bytes]:
+    """
+    Trích xuất nội dung văn bản với chuỗi fallback nhiều tầng.
+
+    Returns:
+        tuple[str, str, bytes]: (full_text, content_source, pdf_bytes)
+            content_source: "html" | "pdf" | "pdf_ocr" | "summary_only" | "none"
+    """
+    _log_available_keys(data, "Document API")
+
+    full_text = ""
+    content_source = "none"
+    pdf_bytes = b""
+
+    # ── Source 1: HTML content từ documentContent ────────────────────────────
+    content_html = ""
+    if isinstance(data.get("documentContent"), dict):
+        raw_content = data["documentContent"].get("content") or ""
+        # Kiểm tra nếu content là HTML thật (không phải base64 PDF)
+        if raw_content and not raw_content.startswith("JVBERi"):
+            content_html = raw_content
+
+    if content_html:
+        full_text = _html_to_text(content_html)
+        if full_text and len(full_text.strip()) > 50:
+            content_source = "html"
+            logger.info(f"Content source: HTML ({len(full_text)} chars)")
+            return full_text, content_source, pdf_bytes
+
+    # ── Source 2: Base64 PDF trong response ──────────────────────────────────
+    logger.info("HTML content not found or too short, checking for PDF...")
+    pdf_bytes = _try_decode_base64_pdf(data) or b""
+
+    # ── Source 3: PDF từ file URLs trong response ────────────────────────────
+    if not pdf_bytes:
+        pdf_urls = _find_pdf_urls(data)
+        for url in pdf_urls:
+            pdf_bytes = _download_pdf(session, url) or b""
+            if pdf_bytes:
+                break
+
+    # ── Source 4: Thử các PDF endpoints ──────────────────────────────────────
+    if not pdf_bytes:
+        pdf_bytes = _try_pdf_endpoints(session, item_id) or b""
+
+    # ── Extract text từ PDF nếu có ───────────────────────────────────────────
+    if pdf_bytes:
+        logger.info(f"PDF found ({len(pdf_bytes):,} bytes), extracting text...")
+        full_text, method = extract_text_from_pdf(pdf_bytes)
+        if full_text:
+            content_source = "pdf" if method == "text_layer" else "pdf_ocr"
+            logger.info(f"Content source: {content_source} ({len(full_text)} chars)")
+            return full_text, content_source, pdf_bytes
+        else:
+            logger.warning("PDF found but text extraction failed")
+
+    # ── Source 5: Tóm tắt (docAbs / summary) ────────────────────────────────
+    summary = data.get("docAbs") or item.get("summary", "")
+    if summary:
+        full_text = summary
+        content_source = "summary_only"
+        logger.warning(
+            f"Only summary available ({len(full_text)} chars). "
+            "Full text could not be extracted."
+        )
+        return full_text, content_source, pdf_bytes
+
+    # ── Không lấy được nội dung ──────────────────────────────────────────────
+    logger.error(
+        f"Cannot extract any content for document {item_id}. "
+        "documentContent, PDF, and summary are all empty."
+    )
+    return "", "none", pdf_bytes
+
+
 def scrape_document(item_or_url, base_meta: dict | None = None) -> VBDocument | None:
     item_id, item = _extract_item_id(item_or_url, base_meta)
     if not item_id:
@@ -402,10 +641,19 @@ def scrape_document(item_or_url, base_meta: dict | None = None) -> VBDocument | 
 
     data = _unwrap_response(response)
     diagram = _unwrap_response(_get_json(session, f"{api_url}/diagram"))
+
+    # ── Trích xuất nội dung với fallback chain ────────────────────────────────
+    full_text, content_source, pdf_bytes = _extract_content_with_fallback(
+        session, data, item_id, item
+    )
+
+    # ── Lấy HTML cho signature extraction (nếu có) ──────────────────────────
     content_html = ""
     if isinstance(data.get("documentContent"), dict):
-        content_html = data["documentContent"].get("content") or ""
-    full_text = _html_to_text(content_html) or data.get("docAbs") or item.get("summary", "")
+        raw = data["documentContent"].get("content") or ""
+        if raw and not raw.startswith("JVBERi"):
+            content_html = raw
+
     articles = _extract_articles(full_text)
     signer, signer_title, signature = _extract_signature(content_html, data)
     issuing_people = _issuing_people(data)
@@ -430,12 +678,18 @@ def scrape_document(item_or_url, base_meta: dict | None = None) -> VBDocument | 
         status=_name(data.get("effStatus")) or data.get("status") or item.get("status", ""),
         issuing_people=issuing_people,
         full_text=full_text,
+        content_html=content_html,
+        content_source=content_source,
+        pdf_bytes=pdf_bytes,
         articles=articles,
         related_docs=_related_docs(data),
         signature=signature,
         relationship_graph=_relationship_graph(diagram, data),
     )
 
-    logger.info(f"Document parsed: {doc.doc_number or doc.item_id} ({len(articles)} article(s))")
+    logger.info(
+        f"Document parsed: {doc.doc_number or doc.item_id} "
+        f"({len(articles)} article(s), source={content_source})"
+    )
     time.sleep(REQUEST_DELAY)
     return doc
