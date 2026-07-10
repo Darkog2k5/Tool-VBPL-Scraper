@@ -1,7 +1,17 @@
 beautifulsoup4
+loguru
 python-docx
 requests
 tqdm
+
+# PDF text extraction (ít nhất cài 1 trong 2)
+pdfplumber
+PyMuPDF
+
+# OCR cho PDF scan (optional nhưng recommended)
+pytesseract
+pdf2image
+Pillow
 
 # Optional for --with-ner
 #torch
