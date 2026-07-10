@@ -21,6 +21,7 @@ def convert_to_json(vb: VBDocument, out_dir: Path) -> tuple[Path, Path]:
             "signer": vb.signer,
             "signer_title": vb.signer_title,
             "status": vb.status,
+            "content_source": getattr(vb, "content_source", ""),
         },
         "attributes": {
             "so_hieu": vb.doc_number,
@@ -32,6 +33,7 @@ def convert_to_json(vb: VBDocument, out_dir: Path) -> tuple[Path, Path]:
             "ngay_ban_hanh": vb.issue_date or "--",
             "ngay_co_hieu_luc": vb.effective_date or "--",
             "nguoi_ky": vb.signer or "--",
+            "nguon_noi_dung": getattr(vb, "content_source", "") or "--",
         }
     }
     thuoc_tinh_path.write_text(json.dumps(thuoc_tinh_payload, ensure_ascii=False, indent=2), encoding="utf-8")

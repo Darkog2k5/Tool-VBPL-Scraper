@@ -21,6 +21,7 @@ from ner.vilegalbert_ner import ViLegalBERTNER, annotate_document
 from exporter.common import safe_filename
 from scraper.detail_scraper import scrape_document
 from scraper.list_scraper import get_total_pages, scrape_all_pages
+from scraper.pdf_extractor import save_pdf
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
@@ -218,6 +219,7 @@ def run_pipeline(
 
     success = 0
     failed = 0
+    content_stats = {"html": 0, "pdf": 0, "pdf_ocr": 0, "summary_only": 0, "none": 0}
     for index, item in enumerate(doc_list, start=1):
         key = _item_key(item)
         if key in processed:
@@ -248,12 +250,20 @@ def run_pipeline(
             doc_dir = Path(OUTPUT_DIR) / "documents" / loai_vb / safe_num
             doc_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Lưu file Word và 2 file JSON vào folder vừa tạo
+            # 4. Lưu file PDF gốc nếu có
+            if vb.pdf_bytes:
+                save_pdf(vb.pdf_bytes, doc_dir / "ban_goc.pdf")
+
+            # 5. Lưu file Word và 2 file JSON vào folder vừa tạo
             docx_path = convert_to_docx(vb, doc_dir)
             thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
 
             if ner_model:
                 annotate_document(thuoc_tinh_path, ner_model, OUTPUT_DIR)
+
+            # 6. Track content source
+            src = getattr(vb, "content_source", "none")
+            content_stats[src] = content_stats.get(src, 0) + 1
 
             _mark_processed(key)
             success += 1
@@ -266,6 +276,12 @@ def run_pipeline(
 
     logger.info("=" * 60)
     logger.info(f"Pipeline finished | success={success} | failed={failed}")
+    logger.info(f"Content source stats: {content_stats}")
+    if content_stats.get("summary_only", 0) or content_stats.get("none", 0):
+        logger.warning(
+            f"  ⚠️ {content_stats.get('summary_only', 0)} văn bản chỉ có tóm tắt, "
+            f"{content_stats.get('none', 0)} văn bản không có nội dung"
+        )
     logger.info(f"Output directory: {Path(OUTPUT_DIR).resolve()}")
 
 
@@ -286,6 +302,11 @@ def run_single_url(url: str, skip_ner: bool = True) -> None:
         doc_dir = Path(OUTPUT_DIR) / "documents" / safe_num
         doc_dir.mkdir(parents=True, exist_ok=True)
 
+        # Lưu file PDF gốc nếu có
+        if vb.pdf_bytes:
+            save_pdf(vb.pdf_bytes, doc_dir / "ban_goc.pdf")
+
+        logger.info(f"Content source: {vb.content_source}")
         docx_path = convert_to_docx(vb, doc_dir)
         thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
 
