@@ -12,3 +12,5 @@ tqdm
 pdf2docx
 docxcompose
 PyMuPDF
+loguru
+curl_cffi

@@ -43,9 +43,8 @@ def get_attachment_links(item_id: str) -> list:
     return [f"nextjs://{item_id}/{name}" for name in links]
 
 def download_file(url: str, out_path: str):
-    """Download a file using NextJS server action proxy."""
+    """Download a file using curl_cffi and RSC decoding to bypass WAF."""
     if not url.startswith("nextjs://"):
-        # Fallback for normal URLs (if any)
         try:
             r = requests.get(url, verify=False, stream=True, timeout=20)
             r.raise_for_status()
@@ -54,49 +53,54 @@ def download_file(url: str, out_path: str):
             return True
         except: return False
 
-    # Extract folderName and objectName
     parts = url.replace("nextjs://", "").split("/", 1)
     if len(parts) != 2: return False
     folder_name, object_name = parts
-
-    # NextJS Server Action Headers
     target_url = f'https://vbpl.vn/van-ban/chi-tiet/thong-bao-284a-tb-btc--{folder_name}?tabs=tai-ve'
-    headers = {
-        'accept': 'text/x-component',
-        'content-type': 'text/plain;charset=UTF-8',
-        'next-action': 'bad13391811d5f14d7670e66189def56c08ceb1f',
-    }
     
-    # Try a few common bucket names
-    import json
-    import base64
-    for bucket in ["vbpl", "moj", "default"]:
+    try:
+        from curl_cffi import requests as cffi_requests
+        import json, base64
+    except ImportError:
+        logger.error("curl_cffi not installed.")
+        return False
+        
+    try:
+        # The correct Next.js Server Action hash for downloading files currently.
+        hash_id = "217f0ce7bcbdef6a7db308d8adac1551104f4264"
+        headers = {
+            'accept': 'text/x-component',
+            'content-type': 'text/plain;charset=UTF-8',
+            'next-action': hash_id,
+        }
+        bucket = "moj"
         payload = json.dumps([{"bucketName": bucket, "folderName": folder_name, "objectName": object_name, "preview": None}])
-        try:
-            r = requests.post(target_url, headers=headers, data=payload, verify=False, timeout=30)
-            if r.status_code == 200:
-                lines = r.text.split('\n')
-                for line in lines:
-                    if line.startswith('2:T'):
-                        b64_raw = line[3:]
-                        import re
-                        match = re.match(r'^([0-9a-fA-F]+),', b64_raw)
-                        if match:
-                            hex_len = match.group(1)
-                            str_len = int(hex_len, 16)
-                            b64 = b64_raw[len(hex_len) + 1 : len(hex_len) + 1 + str_len]
-                        else:
-                            b64 = b64_raw.strip('"\'')
-                            
-                        # Fix missing base64 padding
-                        b64 += "=" * ((4 - len(b64) % 4) % 4)
-                        data = base64.b64decode(b64)
-                        if len(data) > 0:
-                                with open(out_path, 'wb') as f: f.write(data)
-                                return True
-        except Exception as e:
-            logger.error(f"Download failed for {object_name}: {e}")
-    return False
+        
+        logger.info(f"curl_cffi POST downloading {object_name}...")
+        r = cffi_requests.post(target_url, headers=headers, data=payload, impersonate="chrome110", verify=False)
+        
+        if r.status_code == 200 and b"Sorry, you have been blocked" not in r.content:
+            content = r.content.decode('utf-8', errors='ignore')
+            # Extract RSC base64 encoded file
+            import re
+            match = re.search(r'(?:\n|^)\d+:T([0-9a-fA-F]+),', content)
+            if match:
+                length = int(match.group(1), 16)
+                start_idx = match.end()
+                b64_data = content[start_idx:start_idx+length]
+                with open(out_path, "wb") as f:
+                    f.write(base64.b64decode(b64_data))
+                logger.info(f"curl_cffi successfully downloaded and extracted {out_path}")
+                return True
+            elif b'UEsD' in r.content[:100]: # Raw ZIP/DOCX
+                with open(out_path, "wb") as f:
+                    f.write(r.content)
+                return True
+        logger.warning(f"Download failed or blocked for {object_name}")
+        return False
+    except Exception as e:
+        logger.error(f"Download fatal error: {e}")
+        return False
 
 def merge_docx(files: list, out_file: str):
     """Merge multiple docx files into one."""
