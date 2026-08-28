@@ -36,4 +36,12 @@ def convert_to_json(vb: VBDocument, out_dir: Path) -> tuple[Path, Path]:
     luoc_do_path.write_text(json.dumps(luoc_do_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"Đã lưu Lược đồ: {luoc_do_path}")
 
+    # 3. Tạo file Mục Lục (nếu có)
+    muc_luc_path = None
+    toc = getattr(vb, "toc", [])
+    if toc:
+        muc_luc_path = out_dir / "muc_luc.json"
+        muc_luc_path.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info(f"Đã lưu Mục lục: {muc_luc_path}")
+
     return thuoc_tinh_path, luoc_do_path

@@ -36,6 +36,7 @@ class VBDocument:
     issuing_people: List[dict] = dc_field(default_factory=list)
     full_text: str = ""
     articles: List[dict] = dc_field(default_factory=list)
+    toc: List[dict] = dc_field(default_factory=list)
     related_docs: List[dict] = dc_field(default_factory=list)
     signature: dict = dc_field(default_factory=dict)
     relationship_graph: dict = dc_field(default_factory=dict)
@@ -137,7 +138,7 @@ def _html_to_text(html: str) -> str:
         block.append("\n")
 
     # Rút trích text (dùng dấu cách " " làm vách ngăn an toàn cho các thẻ nằm ngang như span, b, i, a)
-    raw_text = target_soup.get_text(separator=" ", strip=True)
+    raw_text = target_soup.get_text(separator=" ")
 
     # Làm sạch khoảng trắng và các dòng trống vô nghĩa
     lines = []
@@ -271,6 +272,80 @@ def _extract_signature(html: str, data: dict) -> tuple[str, str, dict]:
         "issuing_people": people,
         "confidence": confidence or "not_found",
     }
+
+
+TOC_PATTERNS = [
+    (1, "Phần", re.compile(r"^Phần\s+([A-Za-z0-9IVXLCDM]+|thứ\s+[a-zA-Z\s]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (2, "Chương", re.compile(r"^Chương\s+([0-9IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (3, "Mục", re.compile(r"^Mục\s+(\d+|[IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (4, "Tiểu mục", re.compile(r"^Tiểu\s+mục\s+(\d+|[IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (5, "Điều", re.compile(r"^Điều\s+(\d+[a-zA-Z]?)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (6, "Khoản", re.compile(r"^(\d+)\.\s+(.*)$")),
+    (7, "Điểm", re.compile(r"^([a-zđĐ])\)\s+(.*)$")),
+]
+
+def _extract_toc(full_text: str) -> List[dict]:
+    toc_tree = []
+    stack = []
+    
+    lines = full_text.split('\n')
+    
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+            
+        matched = False
+        for level_num, level_name, pattern in TOC_PATTERNS:
+            match = pattern.match(line_clean)
+            if match:
+                number = match.group(1).strip()
+                title_remainder = match.group(2).strip()
+                
+                if level_name in ("Khoản", "Điểm"):
+                    if level_name == "Khoản":
+                        full_title = f"{number}. {title_remainder}".strip()
+                    else:
+                        full_title = f"{number}) {title_remainder}".strip()
+                else:
+                    full_title = f"{level_name} {number}. {title_remainder}".strip() if title_remainder else f"{level_name} {number}"
+                
+                node = {
+                    "level": level_name,
+                    "number": number,
+                    "title": full_title,
+                    "content": "",
+                    "children": []
+                }
+                
+                while stack and stack[-1][0] >= level_num:
+                    stack.pop()
+                    
+                if not stack:
+                    toc_tree.append(node)
+                else:
+                    stack[-1][1]["children"].append(node)
+                    
+                stack.append((level_num, node))
+                matched = True
+                break
+                
+        if not matched:
+            if stack:
+                stack[-1][1]["content"] += ("\n" + line_clean) if stack[-1][1]["content"] else line_clean
+                
+    def _clean_content(nodes):
+        for n in nodes:
+            n["content"] = n["content"].strip()
+            _clean_content(n["children"])
+            
+    _clean_content(toc_tree)
+    
+    # Filter root noise
+    valid_roots = ("Phần", "Chương", "Mục", "Tiểu mục", "Điều")
+    toc_tree = [node for node in toc_tree if node["level"] in valid_roots]
+    
+    return toc_tree
 
 
 def _extract_articles(full_text: str) -> list[dict]:
@@ -426,6 +501,7 @@ def scrape_document(item_or_url, base_meta: dict | None = None) -> VBDocument | 
         content_html = data["documentContent"].get("content") or ""
     full_text = _html_to_text(content_html) or data.get("docAbs") or item.get("summary", "")
     articles = _extract_articles(full_text)
+    toc = _extract_toc(full_text)
     signer, signer_title, signature = _extract_signature(content_html, data)
     issuing_people = _issuing_people(data)
 
@@ -451,11 +527,12 @@ def scrape_document(item_or_url, base_meta: dict | None = None) -> VBDocument | 
         full_text=full_text,
         content_html=content_html,
         articles=articles,
+        toc=toc,
         related_docs=_related_docs(data),
         signature=signature,
         relationship_graph=_relationship_graph(diagram, data),
     )
 
-    logger.info(f"Document parsed: {doc.doc_number or doc.item_id} ({len(articles)} article(s))")
+    logger.info(f"Document parsed: {doc.doc_number or doc.item_id} ({len(articles)} article(s), toc items: {len(toc)})")
     time.sleep(REQUEST_DELAY)
     return doc
