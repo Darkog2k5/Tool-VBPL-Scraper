@@ -5,12 +5,9 @@ htmldocx
 requests
 tqdm
 
-# Optional for --with-ner
-#torch
-#transformers
+
 
 pdf2docx
 docxcompose
-PyMuPDF
 loguru
 curl_cffi

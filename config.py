@@ -46,9 +46,6 @@ TYPE_ID_NAME_MAP = {
     "6": ("Nghị quyết",),
 }
 
-NER_MODEL_NAME = "uitnlp/visobert"
-NER_MAX_LENGTH = 512
-
 DOC_TYPE_CHOICES = [
     ("", "Tất cả hình thức văn bản"),
     ("hien_phap", "Hiến pháp"),
@@ -156,8 +153,6 @@ def ensure_directories() -> None:
         OUTPUT_DIR,
         f"{OUTPUT_DIR}/docx",
         f"{OUTPUT_DIR}/json",
-        f"{OUTPUT_DIR}/ner",
-        f"{OUTPUT_DIR}/zip",
         f"{OUTPUT_DIR}/list",
         f"{OUTPUT_DIR}/state",
     ]:

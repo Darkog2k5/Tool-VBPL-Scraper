@@ -17,7 +17,6 @@ from config import (
 from exporter.to_docx import convert_to_docx
 from exporter.to_json import convert_to_json
 from logging_setup import setup_logging
-from ner.vilegalbert_ner import ViLegalBERTNER, annotate_document
 from exporter.common import safe_filename
 from scraper.detail_scraper import scrape_document
 from scraper.list_scraper import get_total_pages, scrape_all_pages
@@ -169,7 +168,6 @@ def _interactive_args() -> argparse.Namespace:
         all_pages=all_pages,
         page_size=page_size,
         limit=limit,
-        with_ner=False,
         no_resume=not resume,
         url="",
         interactive=True,
@@ -180,7 +178,6 @@ def run_pipeline(
         type_id: str = DEFAULT_TYPE_ID,
         keyword: str = "",
         max_pages: int = 1,
-        skip_ner: bool = True,
         limit: int = 0,
         resume: bool = True,
         page_size: int = DEFAULT_PAGE_SIZE,
@@ -190,7 +187,7 @@ def run_pipeline(
     logger.info("=" * 60)
     logger.info(
         f"Start pipeline | type_id={type_id!r} | keyword={keyword!r} | "
-        f"max_pages={max_pages} | page_size={page_size} | skip_ner={skip_ner} | resume={resume}"
+        f"max_pages={max_pages} | page_size={page_size} | resume={resume}"
     )
 
     doc_list = scrape_all_pages(
@@ -208,10 +205,6 @@ def run_pipeline(
     if not doc_list:
         logger.warning("Document list is empty. Check TypeID, keyword, network, or selectors.")
         return
-
-    ner_model = None
-    if not skip_ner:
-        ner_model = ViLegalBERTNER()
 
     processed = _load_processed_urls() if resume else set()
     logger.info(f"Already processed: {len(processed)} document(s)")
@@ -252,9 +245,6 @@ def run_pipeline(
             docx_path = convert_to_docx(vb, doc_dir)
             thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
 
-            if ner_model:
-                annotate_document(thuoc_tinh_path, ner_model, OUTPUT_DIR)
-
             _mark_processed(key)
             success += 1
             # --- KẾT THÚC CODE MỚI ---
@@ -269,11 +259,11 @@ def run_pipeline(
     logger.info(f"Output directory: {Path(OUTPUT_DIR).resolve()}")
 
 
-def run_single_url(url: str, skip_ner: bool = True) -> None:
+def run_single_url(url: str) -> None:
     ensure_directories()
     setup_logging("pipeline")
     logger.info("=" * 60)
-    logger.info(f"Start single document scrape | url={url!r} | skip_ner={skip_ner}")
+    logger.info(f"Start single document scrape | url={url!r}")
 
     vb = scrape_document(url)
     if not vb:
@@ -288,12 +278,6 @@ def run_single_url(url: str, skip_ner: bool = True) -> None:
 
         docx_path = convert_to_docx(vb, doc_dir)
         thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
-
-        if not skip_ner:
-            ner_model = ViLegalBERTNER()
-            annotate_document(thuoc_tinh_path, ner_model, doc_dir)
-        else:
-            logger.info("NER skipped")
 
         logger.info(f"Single document finished: {vb.doc_number or vb.item_id}")
         # --- KẾT THÚC CODE MỚI ---
@@ -317,7 +301,6 @@ def main() -> None:
     parser.add_argument("--all-pages", action="store_true", help=f"Scrape all known {KNOWN_TOTAL_PAGES} list pages.")
     parser.add_argument("--page-size", "--page_size", default=DEFAULT_PAGE_SIZE, type=int, help="API page size.")
     parser.add_argument("--limit", default=0, type=int, help="Maximum documents to process after listing. 0 means all.")
-    parser.add_argument("--with-ner", action="store_true", help="Run Transformer NER model.")
     parser.add_argument("--no-resume", action="store_true", help="Ignore cached list and processed item state.")
     parser.add_argument("--url", default="", help="Download one detail URL directly.")
 
@@ -326,7 +309,7 @@ def main() -> None:
 
     try:
         if args.url:
-            run_single_url(args.url, skip_ner=not args.with_ner)
+            run_single_url(args.url)
             return
 
         max_pages = KNOWN_TOTAL_PAGES if args.all_pages else args.max_pages
@@ -336,7 +319,6 @@ def main() -> None:
             type_id=type_id,
             keyword=args.keyword,
             max_pages=max_pages,
-            skip_ner=not args.with_ner,
             limit=args.limit,
             resume=not args.no_resume,
             page_size=args.page_size,
