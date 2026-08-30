@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY . .
 
 # Lệnh mặc định khi khởi chạy
-CMD ["python", "crawler_vbpl.py"]
+CMD ["python", "pipeline.py"]
