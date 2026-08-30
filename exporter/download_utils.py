@@ -67,36 +67,52 @@ def download_file(url: str, out_path: str):
         
     try:
         # The correct Next.js Server Action hash for downloading files currently.
-        hash_id = "217f0ce7bcbdef6a7db308d8adac1551104f4264"
+        hash_id = "bad13391811d5f14d7670e66189def56c08ceb1f"
         headers = {
             'accept': 'text/x-component',
             'content-type': 'text/plain;charset=UTF-8',
             'next-action': hash_id,
+            'origin': 'https://vbpl.vn',
+            'referer': target_url
         }
-        bucket = "moj"
-        payload = json.dumps([{"bucketName": bucket, "folderName": folder_name, "objectName": object_name, "preview": None}])
         
-        logger.info(f"curl_cffi POST downloading {object_name}...")
-        r = cffi_requests.post(target_url, headers=headers, data=payload, impersonate="chrome110", verify=False)
+        for bucket in ["vbpl", "moj"]:
+            payload = json.dumps([{"bucketName": bucket, "folderName": folder_name, "objectName": object_name, "preview": None}])
+            
+            logger.info(f"curl_cffi POST downloading {object_name} from bucket {bucket}...")
+            r = cffi_requests.post(target_url, headers=headers, data=payload, impersonate="chrome110", verify=False)
+            
+            if r.status_code == 200 and b"Sorry, you have been blocked" not in r.content:
+                content = r.content.decode('utf-8', errors='ignore')
+                # Extract RSC base64 encoded file
+                import re
+                match = re.search(r'(?:\n|^)\d+:T([0-9a-fA-F]+),', content)
+                if match:
+                    length = int(match.group(1), 16)
+                    start_idx = match.end()
+                    b64_data = content[start_idx:start_idx+length]
+                    decoded_data = base64.b64decode(b64_data)
+                    
+                    # Verify if it's a fake Excel file
+                    if b'xl/workbook.xml' in decoded_data and not out_path.lower().endswith(('.xlsx', '.xls')):
+                        logger.warning(f"Downloaded file {object_name} from bucket {bucket} is a fake Excel file. Trying next bucket if available.")
+                        continue # Try next bucket
+                        
+                    with open(out_path, "wb") as f:
+                        f.write(decoded_data)
+                    logger.info(f"curl_cffi successfully downloaded and extracted {out_path}")
+                    return True
+                elif b'UEsD' in r.content[:100] or b'\xd0\xcf\x11\xe0' in r.content[:10]: # Raw ZIP/DOCX or DOC
+                    # Verify if it's a fake Excel file instead of DOCX
+                    if b'xl/workbook.xml' in r.content and not out_path.lower().endswith(('.xlsx', '.xls')):
+                        logger.warning(f"Downloaded file {object_name} from bucket {bucket} is a fake Excel file. Trying next bucket if available.")
+                        continue # Try next bucket
+
+                    with open(out_path, "wb") as f:
+                        f.write(r.content)
+                    return True
         
-        if r.status_code == 200 and b"Sorry, you have been blocked" not in r.content:
-            content = r.content.decode('utf-8', errors='ignore')
-            # Extract RSC base64 encoded file
-            import re
-            match = re.search(r'(?:\n|^)\d+:T([0-9a-fA-F]+),', content)
-            if match:
-                length = int(match.group(1), 16)
-                start_idx = match.end()
-                b64_data = content[start_idx:start_idx+length]
-                with open(out_path, "wb") as f:
-                    f.write(base64.b64decode(b64_data))
-                logger.info(f"curl_cffi successfully downloaded and extracted {out_path}")
-                return True
-            elif b'UEsD' in r.content[:100]: # Raw ZIP/DOCX
-                with open(out_path, "wb") as f:
-                    f.write(r.content)
-                return True
-        logger.warning(f"Download failed or blocked for {object_name}")
+        logger.warning(f"Download failed or blocked for {object_name} across all buckets.")
         return False
     except Exception as e:
         logger.error(f"Download fatal error: {e}")
