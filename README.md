@@ -1,65 +1,124 @@
-# 🏛️ Tool Cào Dữ Liệu Văn Bản Pháp Luật (vbpl.vn)
+﻿# 🏛️ Tool Cào Dữ Liệu Văn Bản Pháp Luật (vbpl.vn)
 
-Công cụ Python chuyên nghiệp giúp tự động thu thập thông tin, nội dung toàn văn, thuộc tính và lược đồ quan hệ của các Văn bản Pháp luật từ trang web chính thức `vbpl.vn`.
+Công cụ Python tự động thu thập nội dung toàn văn, thuộc tính và lược đồ quan hệ của các Văn bản Pháp luật từ `vbpl.vn`, xuất ra file Word và JSON có cấu trúc rõ ràng.
 
 ## ✨ Tính năng nổi bật
-- **Gom nhóm dữ liệu thông minh**: Tự động phân loại văn bản theo Loại văn bản và Số hiệu văn bản dưới dạng thư mục cha - con trực quan (Ví dụ: `output/documents/Nghi_dinh/139_2026_ND-CP/`).
-- **Đóng gói chuẩn cấu trúc**: Bên trong mỗi thư mục văn bản chứa chính xác các file:
-  - `noi_dung.docx`: Toàn văn nội dung văn bản gốc định dạng Word sạch sẽ (Times New Roman, cỡ chữ 13).
-  - `thuoc_tinh.json`: Chứa dữ liệu thuộc tính (Ngày ban hành, Cơ quan ban hành, Người ký, Tình trạng hiệu lực...).
-  - `luoc_do.json`: Sơ đồ mối quan hệ, các văn bản liên quan, thay thế hoặc bổ sung.
-- **Tải file thông minh**: Nếu văn bản trống tab Nội dung, hệ thống tự động chuyển sang tải các file đính kèm gốc ở tab Tải về (Loại bỏ file rác Template.pdf và file PDF trùng lặp nội dung với file Word).
-- **Xử lý trùng lặp nâng cao**: Tự động nhận diện và gán mã ID định danh duy nhất cho các văn bản cổ/văn bản đặc thù bị trùng tiêu đề "Không số", chặn đứng hoàn toàn tình trạng ghi đè mất file.
-- **Cơ chế chạy tiếp sức (Resume)**: Ghi nhớ tiến trình thông minh. Nếu rớt mạng hoặc dừng đột ngột, lần sau chạy lại sẽ tự động bỏ qua các văn bản đã tải thành công.
+
+- **Gom nhóm dữ liệu thông minh**: Phân loại theo Loại văn bản → Số hiệu văn bản, tránh hoàn toàn tình trạng ghi đè giữa các văn bản trùng số hiệu nhờ gắn ID định danh duy nhất vào tên thư mục.
+  ```
+  output/documents/Nghị_định/139_2026_NĐ-CP_123456/
+  ```
+- **Đóng gói chuẩn cấu trúc**: Bên trong mỗi thư mục văn bản gồm:
+  - `noi_dung.docx` — Toàn văn định dạng Word (Times New Roman, cỡ 13).
+  - `thuoc_tinh.json` — Thuộc tính: Ngày ban hành, Cơ quan ban hành, Tình trạng hiệu lực...
+  - `luoc_do.json` — Sơ đồ văn bản liên quan, thay thế, bổ sung.
+  - `muc_luc.json` — Mục lục điều khoản.
+- **Tải file thông minh**: Nếu văn bản không có tab Nội dung, tự động tải file đính kèm gốc (Word/PDF) từ tab Tải về.
+- **Cơ chế Resume**: Ghi nhớ tiến trình. Nếu bị dừng giữa chừng, lần sau chạy lại sẽ tự bỏ qua các văn bản đã xử lý thành công.
+- **Báo cáo lỗi rõ ràng**: Khi chạy xong, nếu có văn bản tải thất bại, tool sẽ in ra danh sách đầy đủ kèm lý do lỗi và ghi vào `output/state/failed_urls.jsonl` để xử lý lại.
 
 ---
 
-## 🐳 Hướng dẫn vận hành với Docker Desktop (Khuyên dùng)
+## 🐳 Yêu cầu môi trường
 
-Vì đây là một công cụ tương tác yêu cầu người dùng nhập số và chữ từ bàn phím (chọn hình thức văn bản, số trang, xác nhận tải...), chúng ta cần chạy Docker dưới chế độ tương tác terminal.
+- **Docker Desktop** đã được cài đặt và đang chạy.
+- Không cần cài Python hay bất kỳ thư viện nào trên máy thật.
 
-### Bước 1: Biên dịch Image (Chỉ làm lần đầu)
-Mở Terminal tại thư mục gốc của dự án (`Tool_VBPL`) và chạy lệnh:
+---
+
+## 🚀 Hướng dẫn sử dụng
+
+### Bước 1: Build image (chỉ làm lần đầu hoặc sau khi có cập nhật code)
 
 ```bash
 docker compose build
 ```
 
-### Bước 2: Khởi chạy Tool ở chế độ tương tác Menu
-Chạy lệnh sau để bật màn hình nhập liệu:
+### Bước 2: Chạy tool
+
+**Chế độ tương tác (menu hỏi-đáp)** — phù hợp để tải thủ công:
 
 ```bash
 docker compose run --rm vbpl-crawler
 ```
 
-(Tham số --rm đảm bảo container sẽ tự động được dọn dẹp sạch sẽ sau khi bạn tắt tool, không gây nặng máy).
+Tool sẽ hỏi lần lượt: loại văn bản cần tải, từ khóa, số trang, có tải tất cả không, có tiếp tục từ lần trước không. Trả lời rồi nhấn Enter.
 
-### Bước 3: Hướng dẫn các bước nhập liệu (Sau khi chạy lệnh trên)
-Ngay sau khi chạy lệnh ở Bước 2, một menu Hỏi - Đáp tiếng Việt sẽ hiện ra. Bạn hãy hoàn thành các câu hỏi theo trình tự sau bằng bàn phím:
+**Chế độ tham số** — phù hợp để tự động hóa hoặc phân công cho các thành viên:
 
-1. Chọn hình thức văn bản: Nhập số tương ứng với loại văn bản bạn cần tải (Ví dụ: Nhập 3 nếu muốn chọn Bộ luật, nhập 6 cho Nghị định, 7 cho Thông tư...) rồi ấn Enter.
+```bash
+# Cú pháp chung
+docker compose run --rm vbpl-crawler python pipeline.py [tham-so]
 
-2. Từ khóa tìm kiếm: Nếu muốn tải toàn bộ, hãy bỏ trống và ấn trực tiếp phím Enter.
+# Ví dụ: tải toàn bộ Nghị định
+docker compose run --rm vbpl-crawler python pipeline.py --type-id nghi_dinh --all-pages
 
-3. Số item mỗi page: Để mặc định là 10, ấn phím Enter.
+# Ví dụ: tải toàn bộ Thông tư, giới hạn 200 văn bản
+docker compose run --rm vbpl-crawler python pipeline.py --type-id thong_tu --all-pages --limit 200
 
-4. Tải tất cả các trang? (y/N):
+# Ví dụ: tải một văn bản cụ thể theo URL
+docker compose run --rm vbpl-crawler python pipeline.py --url "https://vbpl.vn/van-ban/chi-tiet/..."
 
-   - Gõ y rồi ấn Enter nếu muốn tải sạch toàn bộ danh mục đã chọn.
+# Ví dụ: tải lại từ đầu, bỏ qua cache cũ
+docker compose run --rm vbpl-crawler python pipeline.py --type-id nghi_dinh --all-pages --no-resume
+```
 
-   - Ấn Enter trực tiếp (chọn No) nếu chỉ muốn tải thử trang đầu tiên.
+**Các tham số dòng lệnh:**
 
-5. Giới hạn số văn bản xử lý: Để mặc định là 0 (không giới hạn), ấn phím Enter.
+| Tham số | Mô tả |
+|---|---|
+| `--type-id <loai>` | Loại văn bản cần tải (xem danh sách bên dưới) |
+| `--all-pages` | Tải tất cả các trang danh sách |
+| `--max-pages <n>` | Chỉ tải tối đa n trang danh sách (mặc định: 1) |
+| `--limit <n>` | Giới hạn số văn bản xử lý, 0 = không giới hạn |
+| `--url <url>` | Tải một văn bản đơn lẻ theo URL chi tiết |
+| `--no-resume` | Bỏ qua tiến trình cũ, tải lại từ đầu |
 
-6. Tiếp tục từ dữ liệu đã tải trước đó nếu có? (Y/n):
+**Danh sách `--type-id` được hỗ trợ:**
 
-   - Ấn phím Enter trực tiếp (chọn Yes): Tool sẽ tự bỏ qua các file đã có sẵn, chỉ cào file mới (Khuyên dùng khi mất mạng chạy lại).
+| type-id | Loại văn bản |
+|---|---|
+| `nghi_dinh` | Nghị định |
+| `thong_tu` | Thông tư |
+| `quyet_dinh` | Quyết định |
+| `bo_luat` | Bộ luật |
+| `luat` | Luật |
+| `phap_lenh` | Pháp lệnh |
+| `chi_thi` | Chỉ thị |
+| `nghi_quyet` | Nghị quyết |
+| *(để trống)* | Tải tất cả các loại |
 
-   - Gõ n rồi ấn Enter: Tool sẽ quét và ghi đè/tải lại từ đầu.
+### Bước 3: Lấy dữ liệu
 
-### Bước 4: Chờ hoàn tất và lấy dữ liệu
-- Hệ thống sẽ hiển thị thanh tiến trình tải ([===...===]). Khi chạy xong 100%, dòng chữ Pipeline finished sẽ xuất hiện.
+Dữ liệu được lưu tại `output/documents/` trên máy thật (được mount tự động từ Docker).
 
-- Ấn Enter một lần cuối để đóng cửa sổ.
+Khi hoàn tất, tool in ra tổng kết:
+```
+Pipeline finished | success=4920 | failed=2
+```
 
-- Dữ liệu cào được sẽ nằm ngay tại thư mục output/documents/ trên máy thật của bạn.
+Nếu có lỗi, danh sách các văn bản thất bại sẽ được in ra ngay trên màn hình kèm lý do, và ghi vào `output/state/failed_urls.jsonl` để tra cứu sau.
+
+---
+
+## 📁 Cấu trúc thư mục đầu ra
+
+```
+output/
+├── documents/                          # Dữ liệu văn bản đã tải
+│   ├── Nghị_định/
+│   │   ├── 139_2026_NĐ-CP_123456/     # Tên thư mục = Số_hiệu_ItemID
+│   │   │   ├── noi_dung.docx
+│   │   │   ├── thuoc_tinh.json
+│   │   │   ├── luoc_do.json
+│   │   │   └── muc_luc.json
+│   │   └── ...
+│   ├── Thông_tư/
+│   └── ...
+├── list/                               # Cache danh sách từ API (tái sử dụng khi Resume)
+├── state/
+│   ├── processed_urls.txt              # Item ID đã xử lý thành công
+│   └── failed_urls.jsonl              # Item ID thất bại + lý do lỗi
+└── logs/
+    └── pipeline.log                    # Log chi tiết toàn bộ quá trình
+```

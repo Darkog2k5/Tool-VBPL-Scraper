@@ -211,6 +211,7 @@ def run_pipeline(
 
     success = 0
     failed = 0
+    failed_items: list[dict] = []
     for index, item in enumerate(doc_list, start=1):
         key = _item_key(item)
         if key in processed:
@@ -222,41 +223,49 @@ def run_pipeline(
         if not vb:
             logger.warning(f"Skipped because detail scraping failed: {key}")
             _mark_failed(item, "detail_scrape_failed")
+            failed_items.append({"item_id": key, "doc_number": item.get("doc_number", ""), "title": item.get("title", ""), "reason": "detail_scrape_failed"})
             failed += 1
             continue
 
         try:
-            # --- CODE MỚI CẬP NHẬT ---
             # 1. Lấy tên loại văn bản (Ví dụ: "Bộ luật", "Sắc luật") làm thư mục cha
             loai_vb = safe_filename(vb.doc_type) if vb.doc_type else "Khac"
 
-            # 2. Xử lý tên thư mục con (Số hiệu) để không bị trùng lặp các văn bản "Không số"
+            # 2. Tên thư mục con = Số_hiệu_itemid (duy nhất tuyệt đối, không bao giờ ghi đè)
             raw_num = vb.doc_number
             if not raw_num or raw_num.strip().lower() == "không số":
-                raw_num = f"Khong_so_{vb.item_id[:8]}"
+                raw_num = "Khong_so"
+            safe_num = f"{safe_filename(raw_num)}_{vb.item_id}"
 
-            safe_num = safe_filename(raw_num)
-
-            # 3. Cấu trúc đường dẫn mới: output/documents/Loại_văn_bản/Số_hiệu/
+            # 3. Cấu trúc đường dẫn: output/documents/Loại_văn_bản/Số_hiệu_itemid/
             doc_dir = Path(OUTPUT_DIR) / "documents" / loai_vb / safe_num
             doc_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Lưu file Word và 2 file JSON vào folder vừa tạo
-            docx_path = convert_to_docx(vb, doc_dir)
-            thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
+            # 4. Lưu file Word và các file JSON vào folder vừa tạo
+            convert_to_docx(vb, doc_dir)
+            convert_to_json(vb, doc_dir)
 
             _mark_processed(key)
             success += 1
-            # --- KẾT THÚC CODE MỚI ---
 
         except Exception as exc:
             logger.exception(f"Failed while exporting {key}: {exc}")
             _mark_failed(item, str(exc))
+            failed_items.append({"item_id": key, "doc_number": item.get("doc_number", ""), "title": item.get("title", ""), "reason": str(exc)})
             failed += 1
 
+    # --- BÁO CÁO KẾT QUẢ ---
     logger.info("=" * 60)
     logger.info(f"Pipeline finished | success={success} | failed={failed}")
     logger.info(f"Output directory: {Path(OUTPUT_DIR).resolve()}")
+    if failed_items:
+        logger.warning(f"\n{'=' * 60}")
+        logger.warning(f"DANH SACH VAN BAN THAT BAI ({len(failed_items)} van ban):")
+        logger.warning(f"{'=' * 60}")
+        for fi in failed_items:
+            logger.warning(f"  - [{fi['item_id']}] {fi['doc_number']} | {fi['title'][:60]} | LY DO: {fi['reason'][:80]}")
+        logger.warning(f"{'=' * 60}")
+        logger.warning(f"Chi tiet luu tai: {FAILED_PATH}")
 
 
 def run_single_url(url: str) -> None:
@@ -271,16 +280,18 @@ def run_single_url(url: str) -> None:
         return
 
     try:
-        # --- CODE MỚI ĐƯỢC ĐỒNG BỘ ---
-        safe_num = safe_filename(vb.doc_number or vb.item_id or vb.title)
-        doc_dir = Path(OUTPUT_DIR) / "documents" / safe_num
+        loai_vb = safe_filename(vb.doc_type) if vb.doc_type else "Khac"
+        raw_num = vb.doc_number
+        if not raw_num or raw_num.strip().lower() == "không số":
+            raw_num = "Khong_so"
+        safe_num = f"{safe_filename(raw_num)}_{vb.item_id}"
+        doc_dir = Path(OUTPUT_DIR) / "documents" / loai_vb / safe_num
         doc_dir.mkdir(parents=True, exist_ok=True)
 
-        docx_path = convert_to_docx(vb, doc_dir)
-        thuoc_tinh_path, luoc_do_path = convert_to_json(vb, doc_dir)
+        convert_to_docx(vb, doc_dir)
+        convert_to_json(vb, doc_dir)
 
-        logger.info(f"Single document finished: {vb.doc_number or vb.item_id}")
-        # --- KẾT THÚC CODE MỚI ---
+        logger.info(f"Single document finished: {vb.doc_number or vb.item_id} => {doc_dir}")
 
     except Exception as exc:
         logger.exception(f"Failed while exporting {url}: {exc}")
