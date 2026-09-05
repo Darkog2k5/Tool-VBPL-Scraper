@@ -15,6 +15,7 @@ dist/
 # Data & Logs
 output/
 logs/
+scratch/
 *.log
 
 # IDE files (VSCode, PyCharm)
