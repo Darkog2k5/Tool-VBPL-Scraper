@@ -11,7 +11,7 @@ from config import API_DETAIL_URL, API_HEADERS, MAX_RETRIES, REQUEST_DELAY, REQU
 
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
-LEGACY_ID_RE = re.compile(r"--(\d+)(?:[/?#].*)?$")
+LEGACY_ID_RE = re.compile(r"--([A-Za-z0-9_]+)(?:[/?#].*)?$")
 
 
 @dataclass
