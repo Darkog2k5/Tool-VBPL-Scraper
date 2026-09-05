@@ -274,12 +274,49 @@ def _extract_signature(html: str, data: dict) -> tuple[str, str, dict]:
     }
 
 
+CLOSING_LINE_PATTERNS = [
+    # Nơi nhận / Nơi gửi
+    r"^nơi\s+(?:nhận|gửi)\s*[:\.]?",
+    r"^kính\s+gửi\s*[:\.]?",
+    # Thẩm quyền ký
+    r"^(?:tm\.|kt\.|tl\.|tuq\.)(?:\s+|$)",
+    # Xác nhận chữ ký
+    r"^\s*\(?\s*(?:đã\s+ký|ký\s+thay|ký\s+(?:tên\s*)?(?:(?:và|,)\s*)?(?:đóng\s+dấu|ghi\s+rõ\s+họ\s+tên|chức\s+danh|chức\s+vụ).*|đóng\s+dấu.*)\s*\)?\s*$",
+    # Chức vụ độc lập trên dòng ngắn
+    r"^(?:thủ\s+tướng|phó\s+thủ\s+tướng|bộ\s+trưởng|thứ\s+trưởng|chủ\s+tịch|phó\s+chủ\s+tịch|chánh\s+án|viện\s+trưởng|tổng\s+kiểm\s+toán|thống\s+đốc|chánh\s+văn\s+phòng|cục\s+trưởng|vụ\s+trưởng|tổng\s+cục\s+trưởng)(?:\s+chính\s+phủ|\s+bộ|\s+ubnd|\s+nước)?\s*$",
+    # Header văn bản lặp lại ở cuối VBHN
+    r"^(?:cộng\s+hòa\s+xã\s+hội\s+chủ\s+nghĩa\s+việt\s+nam|độc\s+lập\s+-\s+tự\s+do\s+-\s+hạnh\s+phúc)\s*$",
+    r"^số\s*:\s*[0-9/a-z_-]*vbhn[0-9/a-z_-]*\s*$",
+    r"^ngân\s+hàng\s+nhà\s+nước(?:\s+việt\s+nam)?\s*$",
+    r"^ban\s+thi\s+đua\s*-\s*khen\s+thưởng(?:\s+trung\s+ương)?\s*$",
+]
+CLOSING_LINE_RE = re.compile("|".join(CLOSING_LINE_PATTERNS), re.IGNORECASE)
+
+
+def _strip_closing_text(text: str) -> str:
+    """Lọc bỏ phần nơi nhận và chữ ký ở cuối nội dung."""
+    if not text:
+        return ""
+    lines = text.split("\n")
+    cut_idx = None
+    for idx, line in enumerate(lines):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        if CLOSING_LINE_RE.match(line_clean):
+            cut_idx = idx
+            break
+    if cut_idx is not None:
+        return "\n".join(lines[:cut_idx]).strip()
+    return text.strip()
+
+
 TOC_PATTERNS = [
-    (1, "Phần", re.compile(r"^Phần\s+([A-Za-z0-9IVXLCDM]+|thứ\s+[a-zA-Z\s]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
-    (2, "Chương", re.compile(r"^Chương\s+([0-9IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
-    (3, "Mục", re.compile(r"^Mục\s+(\d+|[IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
-    (4, "Tiểu mục", re.compile(r"^Tiểu\s+mục\s+(\d+|[IVXLCDM]+)[\.:]?\s*(.*)$", re.IGNORECASE)),
-    (5, "Điều", re.compile(r"^Điều\s+(\d+[a-zA-Z]?)[\.:]?\s*(.*)$", re.IGNORECASE)),
+    (1, "Phần", re.compile(r"^Phần\s+([IVXLCDM]+|\d+|[A-Z]|thứ\s+[a-zA-Zàáâãèéêìíòóôõùúýđ\s]+)(?:[\.:]\s*|\s+)(.*)$", re.IGNORECASE)),
+    (2, "Chương", re.compile(r"^Chương\s+([0-9IVXLCDM]+|thứ\s+[a-zA-Zàáâãèéêìíòóôõùúýđ\s]+)(?:[\.:]\s*|\s+)(.*)$", re.IGNORECASE)),
+    (3, "Mục", re.compile(r"^Mục\s+(\d+|[IVXLCDM]+)(?:[\.:]\s*|\s+)(.*)$")),
+    (4, "Tiểu mục", re.compile(r"^Tiểu\s+mục\s+(\d+|[IVXLCDM]+)(?:[\.:]\s*|\s+)(.*)$")),
+    (5, "Điều", re.compile(r"^Điều\s+(\d+[a-zA-Z]?)(?:[\.:]\s*|\s+)(.*)$", re.IGNORECASE)),
     (6, "Khoản", re.compile(r"^(\d+)\.\s+(.*)$")),
     (7, "Điểm", re.compile(r"^([a-zđĐ])\)\s+(.*)$")),
 ]
@@ -289,6 +326,7 @@ def _extract_toc(full_text: str) -> List[dict]:
     stack = []
     
     lines = full_text.split('\n')
+    in_closing_block = False
     
     for line in lines:
         line_clean = line.strip()
@@ -299,8 +337,22 @@ def _extract_toc(full_text: str) -> List[dict]:
         for level_num, level_name, pattern in TOC_PATTERNS:
             match = pattern.match(line_clean)
             if match:
+                # Validation phòng tránh nhận diện nhầm
+                if level_name == "Phần":
+                    num = match.group(1).strip()
+                    if not (num.isdigit() or re.match(r"^[IVXLCDM]+$", num, re.I) or (len(num) == 1 and num.isalpha()) or num.lower().startswith("thứ")):
+                        continue
+                        
+                if level_name in ("Khoản", "Điểm"):
+                    # Khoản và Điểm chỉ hợp lệ khi đã ở trong một Điều/Mục/Chương
+                    if not stack:
+                        continue
+                        
                 number = match.group(1).strip()
                 title_remainder = match.group(2).strip()
+                
+                # Bắt đầu node TOC mới thì kết thúc cờ in_closing_block
+                in_closing_block = False
                 
                 if level_name in ("Khoản", "Điểm"):
                     if level_name == "Khoản":
@@ -331,15 +383,30 @@ def _extract_toc(full_text: str) -> List[dict]:
                 break
                 
         if not matched:
-            if stack:
+            if CLOSING_LINE_RE.match(line_clean):
+                in_closing_block = True
+                
+            if stack and not in_closing_block:
                 stack[-1][1]["content"] += ("\n" + line_clean) if stack[-1][1]["content"] else line_clean
                 
     def _clean_content(nodes):
         for n in nodes:
-            n["content"] = n["content"].strip()
+            n["content"] = _strip_closing_text(n["content"])
             _clean_content(n["children"])
             
     _clean_content(toc_tree)
+    
+    def _filter_nodes(nodes):
+        valid = []
+        for n in nodes:
+            title_clean = n.get("title", "").strip()
+            if CLOSING_LINE_RE.match(title_clean):
+                continue
+            n["children"] = _filter_nodes(n.get("children", []))
+            valid.append(n)
+        return valid
+
+    toc_tree = _filter_nodes(toc_tree)
     
     # Filter root noise
     valid_roots = ("Phần", "Chương", "Mục", "Tiểu mục", "Điều")
@@ -356,7 +423,7 @@ def _extract_articles(full_text: str) -> list[dict]:
     articles = []
     for match in pattern.finditer(full_text):
         header = match.group(1).strip()
-        content = match.group(2).strip()
+        content = _strip_closing_text(match.group(2).strip())
         number_match = re.search(r"Điều\s+(\d+)", header, re.IGNORECASE)
         articles.append(
             {
