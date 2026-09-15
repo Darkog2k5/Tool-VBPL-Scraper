@@ -284,24 +284,70 @@ TOC_PATTERNS = [
     (7, "Điểm", re.compile(r"^([a-zđĐ])\)\s+(.*)$")),
 ]
 
+def _is_signature_line(line: str) -> bool:
+    """Nhận diện các dòng thuộc khối chữ ký cuối văn bản."""
+    text = re.sub(r"\s+", " ", line or "").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    # Dòng "(Đã ký)" hoặc biến thể
+    if re.search(r"\(?[ĐÐ]ã\s+k[ýy]\)?", text, re.IGNORECASE):
+        return True
+    # Dòng chức vụ người ký (BỘ TRƯỞNG, THỦ TƯỚNG, TM., KT., ...)
+    if _is_signature_title(text):
+        return True
+    # Dòng "Nơi nhận:", "Lưu:", "Kính gửi:" — phần hành chính cuối văn bản
+    if upper.startswith(("NƠI NHẬN", "NƠI NHẬN :", "LƯU:", "LƯU :", "KÍNH GỬI")):
+        return True
+    return False
+
+
+HEADER_NOISE_RE = re.compile(
+    r"^(CỘNG\s+HÒA|SOCIALIST\s+REPUBLIC|ĐỘC\s+LẬP\s+-|INDEPENDENCE\s+-|Số\s*:\s*\d|HÀ\s+NỘI\s*,|TP\.\s+HỒ\s+CHÍ|V/V|CHÍNH\s+PHỦ$|BAN\s+BÍ\s+THƯ|BỘ\s+[A-ZĐÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂẮẶẶẢẺẼẸỊỢỤỪỰỶỸ]+$|ỦY\s+BAN|QUỐC\s+HỘI$|TÒA\s+ÁN|VIỆN\s+KIỂM\s+SÁT)",
+    re.IGNORECASE,
+)
+
+
 def _extract_toc(full_text: str) -> List[dict]:
     toc_tree = []
     stack = []
-    
+    hit_signature = False
+    has_content_started = False  # Chỉ lọc chữ ký SAU khi đã gặp ít nhất 1 Điều/Chương
+    pending_title_node = None    # Node Phần/Chương/Mục đang chờ tiêu đề ở dòng tiếp theo
+
     lines = full_text.split('\n')
-    
+
     for line in lines:
         line_clean = line.strip()
         if not line_clean:
             continue
-            
+
+        # Khi đã chạm vào khối chữ ký (và đã có nội dung), bỏ qua toàn bộ dòng còn lại
+        if hit_signature:
+            continue
+
+        # [ƯU TIÊN CAO NHẤT] Kiểm tra chữ ký TRƯỚC KHI thử khớp bất kỳ TOC pattern nào.
+        # Điều này ngăn các dòng như "1. Lưu: VT, BKHĐT." trong phần "Nơi nhận"
+        # bị nhận nhầm thành Khoản 1 của mục lục.
+        if has_content_started and _is_signature_line(line_clean):
+            hit_signature = True
+            continue
+
+        # Bỏ qua phần header đầu văn bản (quốc hiệu, tiêu ngữ, tên cơ quan)
+        # trước khi gặp bất kỳ Điều/Chương/Phần nào
+        if not has_content_started and HEADER_NOISE_RE.match(line_clean):
+            continue
+
         matched = False
         for level_num, level_name, pattern in TOC_PATTERNS:
             match = pattern.match(line_clean)
             if match:
+                # Nếu đang chờ title cho node trước đó, huỷ chờ (dòng này là heading mới)
+                pending_title_node = None
+
                 number = match.group(1).strip()
                 title_remainder = match.group(2).strip()
-                
+
                 if level_name in ("Khoản", "Điểm"):
                     if level_name == "Khoản":
                         full_title = f"{number}. {title_remainder}".strip()
@@ -309,7 +355,7 @@ def _extract_toc(full_text: str) -> List[dict]:
                         full_title = f"{number}) {title_remainder}".strip()
                 else:
                     full_title = f"{level_name} {number}. {title_remainder}".strip() if title_remainder else f"{level_name} {number}"
-                
+
                 node = {
                     "level": level_name,
                     "number": number,
@@ -317,34 +363,56 @@ def _extract_toc(full_text: str) -> List[dict]:
                     "content": "",
                     "children": []
                 }
-                
+
                 while stack and stack[-1][0] >= level_num:
                     stack.pop()
-                    
+
                 if not stack:
                     toc_tree.append(node)
                 else:
                     stack[-1][1]["children"].append(node)
-                    
+
                 stack.append((level_num, node))
+                has_content_started = True
                 matched = True
+
+                # Nếu Phần/Chương/Mục/Tiểu mục mà title_remainder trống,
+                # đánh dấu chờ dòng tiếp theo làm tiêu đề
+                if level_name in ("Phần", "Chương", "Mục", "Tiểu mục") and not title_remainder:
+                    pending_title_node = node
+
                 break
-                
+
         if not matched:
+            # Nếu đang chờ tiêu đề cho Phần/Chương/Mục, gắn dòng này vào title
+            if pending_title_node is not None:
+                pending_title_node["title"] += f". {line_clean}"
+                pending_title_node = None
+                continue
+
+            # Lọc tên người ký SAU khi đã có nội dung (tránh lọc nhầm tên trong nội dung)
+            if has_content_started and _is_person_name(line_clean):
+                continue
+
+            # Nếu vẫn đang ở vùng header (chưa có nội dung) thì bỏ qua
+            # các dòng không phải mục lục (quốc hiệu, số hiệu, ngày tháng, v.v.)
+            if not has_content_started:
+                continue
+
             if stack:
                 stack[-1][1]["content"] += ("\n" + line_clean) if stack[-1][1]["content"] else line_clean
-                
+
     def _clean_content(nodes):
         for n in nodes:
             n["content"] = n["content"].strip()
             _clean_content(n["children"])
-            
+
     _clean_content(toc_tree)
-    
+
     # Filter root noise
     valid_roots = ("Phần", "Chương", "Mục", "Tiểu mục", "Điều")
     toc_tree = [node for node in toc_tree if node["level"] in valid_roots]
-    
+
     return toc_tree
 
 
