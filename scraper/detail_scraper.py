@@ -285,11 +285,14 @@ TOC_PATTERNS = [
 ]
 
 def _is_signature_line(line: str) -> bool:
-    """Nhận diện các dòng thuộc khối chữ ký cuối văn bản."""
+    """Nhận diện các dòng thuộc khối chữ ký cuối văn bản hoặc phụ lục."""
     text = re.sub(r"\s+", " ", line or "").strip()
     if not text:
         return False
     upper = text.upper()
+    # Dòng "Phụ lục"
+    if upper.startswith("PHỤ LỤC"):
+        return True
     # Dòng "(Đã ký)" hoặc biến thể
     if re.search(r"\(?[ĐÐ]ã\s+k[ýy]\)?", text, re.IGNORECASE):
         return True
@@ -441,9 +444,9 @@ def _extract_item_id(item_or_url, base_meta: dict | None = None) -> tuple[str, d
         item = dict(item_or_url)
         item_id = item.get("item_id") or item.get("id") or ""
         if item_id:
-            return item_id, item
+            return str(item_id), item
         for key in ("url_toanvan", "url", "api_detail_url"):
-            raw = item.get(key, "") or ""
+            raw = str(item.get(key, "") or "")
             match = UUID_RE.search(raw)
             if match:
                 return match.group(0), item
@@ -453,14 +456,18 @@ def _extract_item_id(item_or_url, base_meta: dict | None = None) -> tuple[str, d
         return "", item
 
     item = dict(base_meta or {})
-    raw = str(item_or_url)
+    raw = str(item_or_url).strip()
     item["url_toanvan"] = raw
     item["url"] = raw
     match = UUID_RE.search(raw)
     if match:
         return match.group(0), item
     legacy_match = LEGACY_ID_RE.search(raw)
-    return (legacy_match.group(1) if legacy_match else ""), item
+    if legacy_match:
+        return legacy_match.group(1), item
+    if raw.isdigit():
+        return raw, item
+    return "", item
 
 
 def _related_docs(data: dict) -> list[dict]:
