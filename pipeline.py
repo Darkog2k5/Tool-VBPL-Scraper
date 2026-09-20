@@ -17,7 +17,8 @@ from config import (
 from exporter.to_docx import convert_to_docx
 from exporter.to_json import convert_to_json
 from logging_setup import setup_logging
-from exporter.common import safe_filename
+from exporter.common import safe_filename, normalize_name
+from exporter.logger_utils import DocumentLogger
 from scraper.detail_scraper import scrape_document
 from scraper.list_scraper import get_total_pages, scrape_all_pages
 
@@ -212,6 +213,12 @@ def run_pipeline(
     success = 0
     failed = 0
     failed_items: list[dict] = []
+    
+    csv_loggers = {}
+    def get_csv_logger(lvb: str) -> DocumentLogger:
+        if lvb not in csv_loggers:
+            csv_loggers[lvb] = DocumentLogger(lvb)
+        return csv_loggers[lvb]
     for index, item in enumerate(doc_list, start=1):
         key = _item_key(item)
         if key in processed:
@@ -225,11 +232,16 @@ def run_pipeline(
             _mark_failed(item, "detail_scrape_failed")
             failed_items.append({"item_id": key, "doc_number": item.get("doc_number", ""), "title": item.get("title", ""), "reason": "detail_scrape_failed"})
             failed += 1
+            
+            loai_vb_guess = normalize_name(item.get("doc_type")) if item.get("doc_type") else "khac"
+            csv_logger = get_csv_logger(loai_vb_guess)
+            csv_logger.log_error(key, item.get("doc_number", ""), item.get("url", ""), "DETAIL_SCRAPE_FAILED", "detail_scrape_failed")
             continue
 
         try:
             # 1. Lấy tên loại văn bản (Ví dụ: "Bộ luật", "Sắc luật") làm thư mục cha
-            loai_vb = safe_filename(vb.doc_type) if vb.doc_type else "Khac"
+            loai_vb = normalize_name(vb.doc_type) if vb.doc_type else "khac"
+            csv_logger = get_csv_logger(loai_vb)
 
             # 2. Tên thư mục con = Số_hiệu_itemid (duy nhất tuyệt đối, không bao giờ ghi đè)
             raw_num = vb.doc_number
@@ -242,9 +254,13 @@ def run_pipeline(
             doc_dir.mkdir(parents=True, exist_ok=True)
 
             # 4. Lưu file Word và các file JSON vào folder vừa tạo
-            convert_to_docx(vb, doc_dir)
+            saved_file = convert_to_docx(vb, doc_dir)
+            if not saved_file:
+                raise RuntimeError("KHONG_CO_NOI_DUNG_HOAC_FILE_DINH_KEM")
+                
             convert_to_json(vb, doc_dir)
 
+            csv_logger.log_success(key, vb.doc_number, item.get("url_toanvan") or item.get("url", ""), saved_file, vb)
             _mark_processed(key)
             success += 1
 
@@ -253,6 +269,7 @@ def run_pipeline(
             _mark_failed(item, str(exc))
             failed_items.append({"item_id": key, "doc_number": item.get("doc_number", ""), "title": item.get("title", ""), "reason": str(exc)})
             failed += 1
+            csv_logger.log_error(key, item.get("doc_number", ""), item.get("url_toanvan") or item.get("url", ""), "EXCEPTION", str(exc))
 
     # --- BÁO CÁO KẾT QUẢ ---
     logger.info("=" * 60)
@@ -266,6 +283,9 @@ def run_pipeline(
             logger.warning(f"  - [{fi['item_id']}] {fi['doc_number']} | {fi['title'][:60]} | LY DO: {fi['reason'][:80]}")
         logger.warning(f"{'=' * 60}")
         logger.warning(f"Chi tiet luu tai: {FAILED_PATH}")
+        
+    for csv_log in csv_loggers.values():
+        csv_log.save_to_disk()
 
 
 def run_single_url(url: str) -> None:
@@ -277,10 +297,15 @@ def run_single_url(url: str) -> None:
     vb = scrape_document(url)
     if not vb:
         logger.error("Single document scrape failed")
+        csv_logger = DocumentLogger("khac")
+        csv_logger.log_error(url, "", url, "API_FAILED", "Single document scrape failed")
+        csv_logger.save_to_disk()
         return
 
     try:
-        loai_vb = safe_filename(vb.doc_type) if vb.doc_type else "Khac"
+        loai_vb = normalize_name(vb.doc_type) if vb.doc_type else "khac"
+        csv_logger = DocumentLogger(loai_vb)
+        
         raw_num = vb.doc_number
         if not raw_num or raw_num.strip().lower() == "không số":
             raw_num = "Khong_so"
@@ -288,13 +313,21 @@ def run_single_url(url: str) -> None:
         doc_dir = Path(OUTPUT_DIR) / "documents" / loai_vb / safe_num
         doc_dir.mkdir(parents=True, exist_ok=True)
 
-        convert_to_docx(vb, doc_dir)
+        saved_file = convert_to_docx(vb, doc_dir)
+        if not saved_file:
+            raise RuntimeError("KHONG_CO_NOI_DUNG_HOAC_FILE_DINH_KEM")
+            
         convert_to_json(vb, doc_dir)
+        csv_logger.log_success(vb.item_id, vb.doc_number, url, saved_file, vb)
+        csv_logger.save_to_disk()
 
         logger.info(f"Single document finished: {vb.doc_number or vb.item_id} => {doc_dir}")
 
     except Exception as exc:
         logger.exception(f"Failed while exporting {url}: {exc}")
+        if 'csv_logger' in locals():
+            csv_logger.log_error(vb.item_id, vb.doc_number, url, "EXCEPTION", str(exc))
+            csv_logger.save_to_disk()
 
 
 def main() -> None:
